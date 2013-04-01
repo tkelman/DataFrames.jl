@@ -3,119 +3,64 @@
 
 # we can use Julia's parser and just write them as expressions
 
-type Formula
-    lhs::Vector
-    rhs::Vector
-end
+## Allow for one-sided or two-sided formulas
 
-function _dashtree_to_list(ex::Expr)
-    # if the head of the expression is a --, return a list of recursive calls to the LHS and RHS
-    # otherwise, return what we got as a cell array
-    if ex.args[1] == :(--)
-        append(_dashtree_to_list(ex.args[2]), _dashtree_to_list(ex.args[3]))
-    else
-        [ ex ]
-    end
+type Formula
+    lhs::Union(Symbol,Expr,Nothing)
+    rhs::Union(Symbol,Expr)
 end
-_dashtree_to_list(ss::Symbol) = [ ss ]
 
 function Formula(ex::Expr) 
-    # confirm we've got a call to ~, then recursively build a list out of -- - separated subtrees
-    if ex.args[1] != :(~)
-        error("Formula must have a ~!")
-    else
-        lhs = _dashtree_to_list(ex.args[2])
-        rhs = _dashtree_to_list(ex.args[3])
-        Formula(lhs, rhs)
-    end
+    aa = ex.args
+    if ex.args[1] != :(~) error("Invalid formula, lacks '~'") end
+    if length(aa) == 2 return Formula(nothing, ex.args[2]) end
+    Formula(ex.args[2], ex.args[3])
 end
 
 function show(io::IO, f::Formula)
-    print(io, string("Formula: ", join(f.lhs, ", "), " ~ ", join(f.rhs, " +")))
+    print(io, string("Formula: ", f.lhs, " ~ ", f.rhs))
 end
 
-# a ModelFrame is just a wrapper around a DataFrame
-# construct with mf::ModelFrame = model_frame(f::Formula, d::DataFrame)
-# this unpacks the formula, extracts the columns from the DataFrame, and
-# applies the ^, &, *, / operators, and evaluates any other expressions 
-# in the context of the df. Note that columns remain DataVectors, and NAs are 
-# preserved through this step.
+function all_vars(ex::Expr)             # patterned after all.vars in R
+    [[all_vars(a) for a in ex.args[2:end]]...]
+end
 
-# minimal first version: support y ~ x1 + x2 + log(x3)
+all_vars(sym::Symbol) = [sym]
+all_vars(symv::Vector{Symbol}) = symv
+all_vars(v) = Array(Symbol,0)
+
 type ModelFrame
     df::AbstractDataFrame
-    y_indexes::Vector{Int}
-    formula::Formula 
+    intercept::Bool
+    order::Vector{Int}
+    variables::Vector{Symbol}
+    response::Int
+    formula::Formula
+    factors::Vector{Bool}
 end
 
-# Obtain Array of Symbols used in an Expr 
-function unique_symbols(ex::Expr)
-    [[unique_symbols(a) for a in ex.args[2:end]]...]
-end
-unique_symbols(ex::Array{Expr,1}) = [unique_symbols(ex[1])]
-unique_symbols(ex::Symbol) = [ex]
-unique_symbols(ex::Array{Symbol,1}) = [ex[1]]
+## Make the na handler an argument when named arguments are available
+## Need to add a logical index extractor for DataFrame
 
-# Create a DataFrame containing only variables required by the Formula
-# Include grouped indexes present in original DataFrame that are in Formula
-# TODO: Split GroupedDataFrame away from this function?
+function na_omit(df::DataFrame)
+    msng = vec(reducedim(|, isna(df), [2], false))
+    df[!msng,:], msng
+end
+
+## Extract the terms and orders from the rhs.
+function terms(ex::Expr)
+end
+
+# Patterned after the model.frame function in R
 function model_frame(f::Formula, d::AbstractDataFrame)
-    cols = {}
-    col_names = Array(ASCIIString,0)
-    gidx = Dict{Union(UTF8String,ASCIIString),Array{Union(UTF8String,ASCIIString),1}}()
-
-    lhs = unique_symbols(f.lhs)
-    rhs = unique_symbols(f.rhs)
-
-    # so, foreach element in the lhs, evaluate it in the context of the df
-    for ll = 1:length(lhs)
-      s = lhs[ll]
-      if is_group(d, string(s))
-        for a = get_groups(d)[string(s)]
-          push!(cols, with(d, symbol(a)))
-          push!(col_names, a)
-        end
-        gidx[string(s)] = get_groups(d)[string(s)]
-      else 
-        push!(cols, with(d, s))
-        push!(col_names, string(s))
-      end
-    end
-    y_indexes = [1:length(lhs)]
-    
-    # and foreach unique symbol in the rhs, do the same
-    for rr = 1:length(rhs)
-      s = rhs[rr]
-      if is_group(d, string(s))
-        for a = get_groups(d)[string(s)]
-          push!(cols, with(d, symbol(a)))
-          push!(col_names, a)
-        end
-        gidx[string(s)] = get_groups(d)[string(s)]
-      else
-        push!(cols, with(d, s))
-        push!(col_names, string(s))
-      end   
-    end
-    # bind together and return
-    df = DataFrame(cols, col_names)
-    if length(gidx) > 0
-        set_groups(df, gidx)
-    end
-    ModelFrame(df, y_indexes, f)
+    ## First extract the names of all variables in the formula
+    ## Create the set from the rhs because the lhs can be 'nothing'
+    vnms = collect(add_each!(Set(all_vars(f.rhs)...), all_vars(f.lhs)))
+    df = d[vnms]
+    na_omit(df)
 end
 
 model_frame(ex::Expr, d::AbstractDataFrame) = model_frame(Formula(ex), d)
-
-# a ModelMatrix is a wrapper around a matrix, with column names.
-# construct with mm::ModelMatrix = model_matrix(mf::ModelFrame, ...)
-# this converts any non-numeric types to contrasts, deals with NAs, etc.
-
-# minimal first version: allow numbers and strings only, complete cases only
-
-_parallel_or(a,b) = [(x[1] || x[2])::Bool for x in zip(a, b)]
-_parallel_and(a,b) = [(x[1] && x[2])::Bool for x in zip(a, b)]
-complete_cases(df::AbstractDataFrame) = reduce(_parallel_and, colwise(x->!isna(x), df))
 
 type ModelMatrix{T}
     model::Array{Float64}
