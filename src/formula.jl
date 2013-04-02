@@ -21,52 +21,143 @@ function show(io::IO, f::Formula)
     print(io, string("Formula: ", f.lhs, " ~ ", f.rhs))
 end
 
-function all_vars(ex::Expr)             # patterned after all.vars in R
-    [[all_vars(a) for a in ex.args[2:end]]...]
+type Terms
+    terms::Vector
+    variables::Vector{Symbol}
+    factors::Matrix{Bool}               # maps variables to terms
+    order::Vector{Int}
+    response::Int                       # probably unnecessary, always 1
+    intercept::Bool
+    vtyps::Vector{DataType}             # typeof each variable
 end
 
+type ModelFrame
+    df::AbstractDataFrame
+    terms::Terms
+    msng::BitArray
+end
+
+## Return, as a vector of symbols, the names of all the variables in
+## an expression 
+function all_vars(ex::Expr)
+    [[all_vars(a) for a in ex.args[2:end]]...]
+end
 all_vars(sym::Symbol) = [sym]
 all_vars(symv::Vector{Symbol}) = symv
 all_vars(v) = Array(Symbol,0)
 
-type ModelFrame
-    df::AbstractDataFrame
-    intercept::Bool
-    order::Vector{Int}
-    variables::Vector{Symbol}
-    response::Int
-    formula::Formula
-    factors::Vector{Bool}
+## Extract the terms and orders from a formula
+## ToDo: Expand a*b, a/b, etc. on the rhs
+##       Handle cases where rhs top level operator is - or any toplevel
+##       arg is a subtraction 
+function Terms(f::Formula, vnms::Vector{Symbol}, typs::Vector{DataType})
+    ex = f.rhs
+    ## the expression is a sum of terms or a single term
+    terms = ex.args[1] == :+ ? ex.args[2:end] : ex
+    terms = terms[!(terms .== 1)]       # drop any explicit 1's
+    noint = (terms .== 0) | (terms .== -1) # should also handle :(-(expr,1))
+    terms = terms[!noint]
+    ## create the boolean array mapping factors to terms
+    factors = hcat(map(t->(vars = Set(all_vars(t)...);
+                           convert(Vector{Bool},map(x->has(vars,x),vnms))),
+                       terms)...)
+    Terms(unshift!(terms, f.lhs), vnms, factors,
+          vec(sum(factors,[1])), 1, !any(noint), typs)
 end
 
-## Make the na handler an argument when named arguments are available
-## Need to add a logical index extractor for DataFrame
+## Return, as a vector of symbols, the names of all the variables in
+## an expression 
+function all_vars(ex::Expr)
+    [[all_vars(a) for a in ex.args[2:end]]...]
+end
+all_vars(sym::Symbol) = [sym]
+all_vars(symv::Vector{Symbol}) = symv
+all_vars(v) = Array(Symbol,0)
 
+## Default NA handler.  Others can be added when keyword arguments are available.
 function na_omit(df::DataFrame)
     msng = vec(reducedim(|, isna(df), [2], false))
     df[!msng,:], msng
 end
 
-## Extract the terms and orders from the rhs.
-function terms(ex::Expr)
+function dropUnusedLevels!(da::PooledDataArray)
+    rr = da.refs
+    uu = unique(rr)
+    if length(uu) == length(da.pool) return da end
+    T = eltype(rr)
+    su = sort!(uu)
+    dict = Dict(su, one(T):convert(T,length(uu)))
+    da.refs = map(x->dict[x], rr)
+    da.pool = da.pool[uu]
+    da
 end
-
-# Patterned after the model.frame function in R
-function model_frame(f::Formula, d::AbstractDataFrame)
+dropUnusedLevels!(x) = x
+    
+function ModelFrame(f::Formula, d::AbstractDataFrame)
     ## First extract the names of all variables in the formula
-    ## Create the set from the rhs because the lhs can be 'nothing'
+    ## Create the set from the rhs then add_each for the lhs, which can be 'nothing'
     vnms = collect(add_each!(Set(all_vars(f.rhs)...), all_vars(f.lhs)))
+    ## Select only the variables from the formula and apply the NA handler
     df = d[vnms]
-    na_omit(df)
+    df, msng = na_omit(df)
+    for i in 1:length(df) df[i] = dropUnusedLevels!(df[i]) end
+    trms = Terms(f, vnms, [convert(DataType,typeof(c[2])) for c in df])
+    dd = DataFrame()
+    for t in trms.terms dd[string(t)] = with(df, t) end
+    ModelFrame(dd, trms, msng)
+end
+ModelFrame(ex::Expr, d::AbstractDataFrame) = ModelFrame(Formula(ex), d)
+
+model_response(mf::ModelFrame) = with(mf.df, mf.terms.terms[mf.terms.response])
+
+function contr_treatment(n::Integer, contrasts::Bool, sparse::Bool, base::Integer)
+    if n < 2 error("not enought degrees of freedom to define contrasts") end
+    contr = sparse ? speye(n) : eye(n)
+    if !contrasts return contr end
+    if !(1 <= base <= n) error("base = $base is not allowed for n = $n") end
+    contr[:,vcat(1:(base-1),(base+1):end)]
+end
+contr_treatment(n::Integer,contrasts::Bool,sparse::Bool) = contr_treatment(n,contrasts,sparse,1)
+contr_treatment(n::Integer, contrasts::Bool) = contr_treatment(n,contrasts,false,1)
+contr_treatment(n::Integer) = contr_treatment(n,true,false,1)
+    
+function cols(vv)
+    vtyp = typeof(vv)
+    if vtyp <: PooledDataVector
+        return contr_treatment(length(vv.pool))[vv.refs,:]
+    end
+    if !(vtyp <: DataVector)
+        error("column $vname is neither a PooledDataVector nor a DataVector")
+    end
+    float64(vv.data)
 end
 
-model_frame(ex::Expr, d::AbstractDataFrame) = model_frame(Formula(ex), d)
+model_response(mf::ModelFrame) = with(mf.df, mf.terms.terms[mf.terms.response])
+    
+type ModelMatrix
+    m::Matrix{Float64}
+    assign::Vector{Int}
+#    contrasts::Vector{Function}
+end
 
-type ModelMatrix{T}
-    model::Array{Float64}
-    response::Array{Float64}
-    model_colnames::Array{T}
-    response_colnames::Array{T}
+function cols(vv)
+    vtyp = typeof(vv)
+    if vtyp <: PooledDataVector
+        return contr_treatment(length(vv.pool))[vv.refs,:]
+    end
+    if !(vtyp <: DataVector)
+        error("column generator is neither a PooledDataVector nor a DataVector")
+    end
+    float64(vv.data)
+end
+
+function ModelMatrix(mf::ModelFrame)
+    trms = mf.terms
+    cdict = Dict(trms.variables, [cols(mf.df[v]) for v in trms.variables])
+    vv = [cdict[nm] for nm in trms.terms]
+    if trms.intercept unshift!(vv, ones(size(mf.df,1))) end
+    mm = hcat(vv...)
+    ModelMatrix(mm, ones(Int, size(mm,2)))
 end
 
 # Expand dummy variables and equations
