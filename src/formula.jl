@@ -1,34 +1,43 @@
 # Formulas for representing and working with linear-model-type expressions
-# Harlan D. Harris
+# Original by Harlan D. Harris.  Later modifications by John Myles White
+# and Douglas M. Bates.
 
-# we can use Julia's parser and just write them as expressions
+## Formulas are written as expressions and parsed by the Julia parser.
+## For example :(y ~ a + b + log(c))
+## In Julia the & operator is used for an interaction.  What would be written
+## in R as y ~ a + b + a:b is written :(y ~ a + b + a&b) in Julia.
 
-## Allow for one-sided or two-sided formulas
+## Each side of a formula is either a Symbol or an Expr
+
+typealias SymExpr Union(Symbol,Expr)
+
+## The lhs of a one-sided formula is 'nothing'
 
 type Formula
-    lhs::Union(Symbol,Expr,Nothing)
-    rhs::Union(Symbol,Expr)
+    lhs::Union(SymExpr,Nothing)
+    rhs::SymExpr
 end
 
 function Formula(ex::Expr) 
     aa = ex.args
-    if ex.args[1] != :(~) error("Invalid formula, lacks '~'") end
-    if length(aa) == 2 return Formula(nothing, ex.args[2]) end
-    Formula(ex.args[2], ex.args[3])
+    if aa[1] != :~
+        error("Invalid formula, top-level argument must be '~'.  Check parentheses.")
+    end
+    if length(aa) == 2 return Formula(nothing, aa[2]) end
+    Formula(aa[2], aa[3])
 end
 
 function show(io::IO, f::Formula)
-    print(io, string("Formula: ", f.lhs, " ~ ", f.rhs))
+    print(io, string("Formula: ", f.lhs == nothing ? "" : f.lhs, " ~ ", f.rhs))
 end
 
 type Terms
     terms::Vector
     variables::Vector{Symbol}
-    factors::Matrix{Bool}               # maps variables to terms
-    order::Vector{Int}
-    response::Int                       # probably unnecessary, always 1
+    factors::Matrix{Int8}               # variables to terms
+    order::Vector{Int8}
+    response::Int
     intercept::Bool
-    vtyps::Vector{DataType}             # typeof each variable
 end
 
 type ModelFrame
@@ -38,41 +47,66 @@ type ModelFrame
 end
 
 ## Return, as a vector of symbols, the names of all the variables in
-## an expression 
-function all_vars(ex::Expr)
-    [[all_vars(a) for a in ex.args[2:end]]...]
+## an expression or a formula
+function allvars(ex::Expr)
+    [[allvars(a) for a in ex.args[2:end]]...]
 end
-all_vars(sym::Symbol) = [sym]
-all_vars(symv::Vector{Symbol}) = symv
-all_vars(v) = Array(Symbol,0)
+function allvars(f::Formula)
+    ## Create the set from the rhs then add_each for the lhs, which can be 'nothing'
+    collect(add_each!(Set(allvars(f.rhs)...), allvars(f.lhs)))
+end
+allvars(sym::Symbol) = [sym]
+allvars(symv::Vector{Symbol}) = symv
+allvars(v) = Array(Symbol,0)
+
+function getterms(ex::Expr)
+    ex.args[1] == :+ ? ex.args[2:end] : [ex]
+end
+getterms(f::Formula) = getterms(f.rhs)
+getterms(sym::Symbol) = [sym]
+
+function expandasterisk(ex::Expr)
+    if ex.args[1] != :* return ex end
+    template = :(u&v)
+    a2 = ex.args[2]
+    a3 = expandasterisk(ex.args[3])
+    template.args[2] = a2
+    template.args[3] = a3
+    if isa(a3, Symbol) return [a2, a3, template] end
+    vcat([a2, a3, [:(a2&a) for a in a3]])
+end
+expandasterisk(v::Vector) = vcat([expandasterisk(vv) for vv in v])
+expandasterisk(s::Symbol) = s
 
 ## Extract the terms and orders from a formula
 ## ToDo: Expand a*b, a/b, etc. on the rhs
 ##       Handle cases where rhs top level operator is - or any toplevel
 ##       arg is a subtraction 
-function Terms(f::Formula, vnms::Vector{Symbol}, typs::Vector{DataType})
-    ex = f.rhs
-    ## the expression is a sum of terms or a single term
-    terms = ex.args[1] == :+ ? ex.args[2:end] : ex
-    terms = terms[!(terms .== 1)]       # drop any explicit 1's
+function Terms(f::Formula, d::AbstractDataFrame)
+    vars = allvars(f)
+    terms = getterms(f)
+    terms = terms[!(terms .== 1)]          # drop any explicit 1's
     noint = (terms .== 0) | (terms .== -1) # should also handle :(-(expr,1))
     terms = terms[!noint]
+    ## expand terms of the form a*b to a + b + (a&b)
+    terms = expandasterisk(terms)
     ## create the boolean array mapping factors to terms
-    factors = hcat(map(t->(vars = Set(all_vars(t)...);
-                           convert(Vector{Bool},map(x->has(vars,x),vnms))),
+    factors = hcat(map(t->(vv = Set(allvars(t)...);
+                           convert(Vector{Int8},map(x->has(vv,x),vars))),
                        terms)...)
-    Terms(unshift!(terms, f.lhs), vnms, factors,
-          vec(sum(factors,[1])), 1, !any(noint), typs)
+    ord = vec(sum(factors,[1]))
+    if !issorted(ord)
+        pp = sortperm(ord)
+        terms = terms[pp]
+        factors = factors[:,pp]
+    end
+    response = 0
+    if f.lhs != nothing
+        terms = unshift!(terms, f.lhs)
+        response = 1
+    end
+    Terms(terms, vars, factors, ord, response, !any(noint))
 end
-
-## Return, as a vector of symbols, the names of all the variables in
-## an expression 
-function all_vars(ex::Expr)
-    [[all_vars(a) for a in ex.args[2:end]]...]
-end
-all_vars(sym::Symbol) = [sym]
-all_vars(symv::Vector{Symbol}) = symv
-all_vars(v) = Array(Symbol,0)
 
 ## Default NA handler.  Others can be added when keyword arguments are available.
 function na_omit(df::DataFrame)
@@ -94,17 +128,14 @@ end
 dropUnusedLevels!(x) = x
     
 function ModelFrame(f::Formula, d::AbstractDataFrame)
-    ## First extract the names of all variables in the formula
-    ## Create the set from the rhs then add_each for the lhs, which can be 'nothing'
-    vnms = collect(add_each!(Set(all_vars(f.rhs)...), all_vars(f.lhs)))
+    trms = Terms(f, d)
     ## Select only the variables from the formula and apply the NA handler
-    df = d[vnms]
+    df = d[trms.variables]
     df, msng = na_omit(df)
     for i in 1:length(df) df[i] = dropUnusedLevels!(df[i]) end
-    trms = Terms(f, vnms, [convert(DataType,typeof(c[2])) for c in df])
-    dd = DataFrame()
-    for t in trms.terms dd[string(t)] = with(df, t) end
-    ModelFrame(dd, trms, msng)
+#    dd = DataFrame()
+#    for t in trms.terms dd[string(t)] = with(df, t) end
+    ModelFrame(df, trms, msng)
 end
 ModelFrame(ex::Expr, d::AbstractDataFrame) = ModelFrame(Formula(ex), d)
 
@@ -120,19 +151,6 @@ end
 contr_treatment(n::Integer,contrasts::Bool,sparse::Bool) = contr_treatment(n,contrasts,sparse,1)
 contr_treatment(n::Integer, contrasts::Bool) = contr_treatment(n,contrasts,false,1)
 contr_treatment(n::Integer) = contr_treatment(n,true,false,1)
-    
-function cols(vv)
-    vtyp = typeof(vv)
-    if vtyp <: PooledDataVector
-        return contr_treatment(length(vv.pool))[vv.refs,:]
-    end
-    if !(vtyp <: DataVector)
-        error("column $vname is neither a PooledDataVector nor a DataVector")
-    end
-    float64(vv.data)
-end
-
-model_response(mf::ModelFrame) = with(mf.df, mf.terms.terms[mf.terms.response])
     
 type ModelMatrix
     m::Matrix{Float64}
