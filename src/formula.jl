@@ -6,16 +6,34 @@
 ## For example :(y ~ a + b + log(c))
 ## In Julia the & operator is used for an interaction.  What would be written
 ## in R as y ~ a + b + a:b is written :(y ~ a + b + a&b) in Julia.
-
-## Each side of a formula is either a Symbol or an Expr
-
-typealias SymExpr Union(Symbol,Expr)
+## The equivalent R expression, y ~ a*b, is the same in Julia
 
 ## The lhs of a one-sided formula is 'nothing'
+## The rhs of a formula can be 1
 
 type Formula
-    lhs::Union(SymExpr,Nothing)
-    rhs::SymExpr
+    lhs::Union(Symbol, Expr,Nothing)
+    rhs::Union(Symbol, Expr, Integer)
+end
+
+type Terms
+    terms::Vector
+    eterms::Vector                    # evaluation terms
+    factors::Matrix{Int8}             # maps terms to evaluation terms
+    order::Vector{Int}                # orders of rhs terms
+    response::Bool       # indicator of a response, which is eterms[1] if present
+    intercept::Bool      # is there an intercept column in the model matrix?
+end
+
+type ModelFrame
+    df::AbstractDataFrame
+    terms::Terms
+    msng::BitArray
+end
+    
+type ModelMatrix
+    m::Matrix{Float64}
+    assign::Vector{Int}
 end
 
 function Formula(ex::Expr) 
@@ -31,84 +49,102 @@ function show(io::IO, f::Formula)
     print(io, string("Formula: ", f.lhs == nothing ? "" : f.lhs, " ~ ", f.rhs))
 end
 
-type Terms
-    terms::Vector
-    variables::Vector{Symbol}
-    factors::Matrix{Int8}               # variables to terms
-    order::Vector{Int8}
-    response::Int
-    intercept::Bool
-end
-
-type ModelFrame
-    df::AbstractDataFrame
-    terms::Terms
-    msng::BitArray
-end
-
 ## Return, as a vector of symbols, the names of all the variables in
 ## an expression or a formula
 function allvars(ex::Expr)
-    [[allvars(a) for a in ex.args[2:end]]...]
+    if ex.head != :call error("Non-call expression encountered") end
+    [[allvars(a) for a in ex.args[2:]]...]
 end
-function allvars(f::Formula)
-    ## Create the set from the rhs then add_each for the lhs, which can be 'nothing'
-    collect(add_each!(Set(allvars(f.rhs)...), allvars(f.lhs)))
-end
+allvars(f::Formula) = unique(vcat(allvars(f.rhs), allvars(f.lhs)))
 allvars(sym::Symbol) = [sym]
-allvars(symv::Vector{Symbol}) = symv
 allvars(v) = Array(Symbol,0)
 
-function getterms(ex::Expr)
-    ex.args[1] == :+ ? ex.args[2:end] : [ex]
-end
-getterms(f::Formula) = getterms(f.rhs)
-getterms(sym::Symbol) = [sym]
+const specials = Set(:+,:-,:*,:/,:&,:|,:^) # special operators in formulas
 
-function expandasterisk(ex::Expr)
-    if ex.args[1] != :* return ex end
-    template = :(u&v)
-    a2 = ex.args[2]
-    a3 = expandasterisk(ex.args[3])
-    template.args[2] = a2
-    template.args[3] = a3
-    if isa(a3, Symbol) return [a2, a3, template] end
-    vcat([a2, a3, [:(a2&a) for a in a3]])
-end
-expandasterisk(v::Vector) = vcat([expandasterisk(vv) for vv in v])
-expandasterisk(s::Symbol) = s
-
-## Extract the terms and orders from a formula
-## ToDo: Expand a*b, a/b, etc. on the rhs
-##       Handle cases where rhs top level operator is - or any toplevel
-##       arg is a subtraction 
-function Terms(f::Formula, d::AbstractDataFrame)
-    vars = allvars(f)
-    terms = getterms(f)
-    terms = terms[!(terms .== 1)]          # drop any explicit 1's
-    noint = (terms .== 0) | (terms .== -1) # should also handle :(-(expr,1))
-    terms = terms[!noint]
-    ## expand terms of the form a*b to a + b + (a&b)
-    terms = expandasterisk(terms)
-    ## create the boolean array mapping factors to terms
-    factors = hcat(map(t->(vv = Set(allvars(t)...);
-                           convert(Vector{Int8},map(x->has(vv,x),vars))),
-                       terms)...)
-    ord = vec(sum(factors,[1]))
-    if !issorted(ord)
-        pp = sortperm(ord)
-        terms = terms[pp]
-        factors = factors[:,pp]
+function dospecials(ex::Expr)
+    if ex.head != :call error("Non-call expression encountered") end
+    a1 = ex.args[1]
+    if !has(specials, a1) return ex end
+    excp = copy(ex)
+    excp.args = vcat(a1,map(dospecials, ex.args[2:]))
+    if a1 != :* return excp end
+    aa = excp.args
+    a2 = aa[2]
+    a3 = aa[3]
+    if length(aa) > 3
+        excp.args = vcat(a1, aa[3:])
+        a3 = dospecials(excp)
     end
-    response = 0
-    if f.lhs != nothing
-        terms = unshift!(terms, f.lhs)
-        response = 1
+    :($a2 + $a3 + $a2 & $a3)
+end
+dospecials(a) = a
+
+const associative = Set(:+,:*,:&)       # associative special operators
+
+## If the expression is a call to the function s return its arguments
+## Otherwise return the expression
+function ex_or_args(ex::Expr,s::Symbol)
+    if ex.head != :call error("Non-call expression encountered") end
+    excp = copy(ex)
+    a1 = ex.args[1]
+    a2 = map(condense, ex.args[2:])
+    if a1 == s return a2 end
+    excp.args = vcat(a1, a2)
+    excp
+end
+ex_or_args(a,s::Symbol) = a
+
+## Condense calls like :(+(a,+(b,c))) to :(+(a,b,c))
+## Also need to work out how to distribute & over +
+function condense(ex::Expr)
+    if ex.head != :call error("Non-call expression encountered") end
+    a1 = ex.args[1]
+    if !has(associative, a1) return ex end
+    excp = copy(ex)
+    excp.args = vcat(a1, map(x->ex_or_args(x,a1), ex.args[2:])...)
+    excp
+end    
+condense(a) = a
+
+getterms(ex::Expr) = (ex.head == :call && ex.args[1] == :+) ? ex.args[2:] : ex
+getterms(a) = a
+
+ord(ex::Expr) = (ex.head == :call && ex.args[1] == :&) ? length(ex.args)-1 : 1
+ord(a) = 1
+
+const nonevaluation = Set(:&,:|)        # operators constructed from other evaluations
+## evaluation terms - the (filtered) arguments for :& and :|, otherwise the term itself
+function evt(ex::Expr)
+    if ex.head != :call error("Non-call expression encountered") end
+    if !has(nonevaluation, ex.args[1]) return ex end
+    filter(x->!isa(x,Number), map(getterms, ex.args[2:]))
+end
+evt(a) = {a}
+    
+function Terms(f::Formula)
+    rhs = condense(dospecials(f.rhs))
+    tt = getterms(rhs)
+    tt = tt[!(tt .== 1)]             # drop any explicit 1's
+    noint = (tt .== 0) | (tt .== -1) # should also handle :(-(expr,1))
+    tt = tt[!noint]
+    oo = int(map(ord, tt))           # orders of interaction terms
+    if !issorted(oo)                 # sort terms by increasing order
+        pp = sortperm(oo)
+        tt = tt[pp]
+        oo = oo[pp]
     end
-    Terms(terms, vars, factors, ord, response, !any(noint))
+    etrms = map(evt, tt)
+    haslhs = f.lhs != nothing
+    if haslhs
+        unshift!(etrms, {f.lhs})
+        unshift!(oo, 1)
+    end
+    ev = unique(vcat(etrms...))
+    facs = int8(hcat(map(x->(s=Set(x...);map(t->int8(has(s,t)), ev)),etrms)...))
+    Terms(tt, ev, facs, oo, haslhs, !any(noint))
 end
 
-## Default NA handler.  Others can be added when keyword arguments are available.
+## Default NA handler.  Others can be added as keyword arguments
 function na_omit(df::DataFrame)
     msng = vec(reducedim(|, isna(df), [2], false))
     df[!msng,:], msng
@@ -126,101 +162,100 @@ function dropUnusedLevels!(da::PooledDataArray)
     da
 end
 dropUnusedLevels!(x) = x
-    
+
 function ModelFrame(f::Formula, d::AbstractDataFrame)
-    trms = Terms(f, d)
-    ## Select only the variables from the formula and apply the NA handler
-    df = d[trms.variables]
-    df, msng = na_omit(df)
-    for i in 1:length(df) df[i] = dropUnusedLevels!(df[i]) end
-#    dd = DataFrame()
-#    for t in trms.terms dd[string(t)] = with(df, t) end
+    trms = Terms(f)
+    etrms = map(x->with(d,x),trms.eterms)
+    df,msng = na_omit(DataFrame(map(dropUnusedLevels!, etrms)...))
+    colnames!(df, map(string, trms.eterms))
     ModelFrame(df, trms, msng)
 end
 ModelFrame(ex::Expr, d::AbstractDataFrame) = ModelFrame(Formula(ex), d)
 
-model_response(mf::ModelFrame) = with(mf.df, mf.terms.terms[mf.terms.response])
+function model_response(mf::ModelFrame)
+    if !mf.terms.response
+        error("Formula for the model frame was a one-sided formula")
+    end
+    mf.df[bool(mf.terms.factors[:,1])][:,1]
+end
 
 function contr_treatment(n::Integer, contrasts::Bool, sparse::Bool, base::Integer)
     if n < 2 error("not enought degrees of freedom to define contrasts") end
-    contr = sparse ? speye(n) : eye(n)
+    contr = sparse ? speye(n) : eye(n) .== 1.
     if !contrasts return contr end
     if !(1 <= base <= n) error("base = $base is not allowed for n = $n") end
     contr[:,vcat(1:(base-1),(base+1):end)]
 end
 contr_treatment(n::Integer,contrasts::Bool,sparse::Bool) = contr_treatment(n,contrasts,sparse,1)
-contr_treatment(n::Integer, contrasts::Bool) = contr_treatment(n,contrasts,false,1)
+contr_treatment(n::Integer,contrasts::Bool) = contr_treatment(n,contrasts,false,1)
 contr_treatment(n::Integer) = contr_treatment(n,true,false,1)
-    
-type ModelMatrix
-    m::Matrix{Float64}
-    assign::Vector{Int}
-#    contrasts::Vector{Function}
-end
+cols(v::PooledDataVector) = contr_treatment(length(v.pool))[v.refs,:]
+cols(v::DataVector) = reshape(float64(v.data), (length(v),1))
 
-function cols(vv)
-    vtyp = typeof(vv)
-    if vtyp <: PooledDataVector
-        return contr_treatment(length(vv.pool))[vv.refs,:]
-    end
-    if !(vtyp <: DataVector)
-        error("column generator is neither a PooledDataVector nor a DataVector")
-    end
-    float64(vv.data)
+function isfe(ex::Expr)                 # true for fixed-effects terms
+    if ex.head != :call error("Non-call expression encountered") end
+    ex.args[1] != :|
 end
+isfe(a) = true
 
-function ModelMatrix(mf::ModelFrame)
+function model_matrix(mf::ModelFrame)
     trms = mf.terms
-    cdict = Dict(trms.variables, [cols(mf.df[v]) for v in trms.variables])
-    vv = [cdict[nm] for nm in trms.terms]
-    if trms.intercept unshift!(vv, ones(size(mf.df,1))) end
-    mm = hcat(vv...)
-    ModelMatrix(mm, ones(Int, size(mm,2)))
+    aa = {{ones(size(mf.df,1),int(trms.intercept))}}
+    fetrms = bool(map(isfe, trms.terms))
+    if trms.response unshift!(fetrms,false) end
+    ff = trms.factors[:,fetrms]
+    ## need to be cautious here to avoid evaluating cols for a factor with many levels
+    ## if the factor doesn't occur in the fetrms
+    rows = vec(bool(sum(ff,[2])))
+    ff = ff[rows,:]
+    cc = [cols(x[2]) for x in mf.df[:,rows]]
+    for j in 1:size(ff,2) push!(aa, cc[bool(ff[:,j])]) end
+    aa
 end
 
 # Expand dummy variables and equations
-function model_matrix(mf::ModelFrame)
-    ex = mf.formula.rhs[1]
-    # BUG: complete_cases doesn't preserve grouped columns
-    df = mf.df#[complete_cases(mf.df),1:ncol(mf.df)]  
-    rdf = df[mf.y_indexes]
-    mdf = expand(ex, df)
+## function model_matrix(mf::ModelFrame)
+##     ex = mf.formula.rhs[1]
+##     # BUG: complete_cases doesn't preserve grouped columns
+##     df = mf.df#[complete_cases(mf.df),1:ncol(mf.df)]  
+##     rdf = df[mf.y_indexes]
+##     mdf = expand(ex, df)
 
-    # TODO: Convert to Array{Float64} in a cleaner way
-    rnames = colnames(rdf)
-    mnames = colnames(mdf)
-    r = Array(Float64,nrow(rdf),ncol(rdf))
-    m = Array(Float64,nrow(mdf),ncol(mdf))
-    for i = 1:nrow(rdf)
-      for j = 1:ncol(rdf)
-        r[i,j] = float(rdf[i,j])
-      end
-      for j = 1:ncol(mdf)
-        m[i,j] = float(mdf[i,j])
-      end
-    end
+##     # TODO: Convert to Array{Float64} in a cleaner way
+##     rnames = colnames(rdf)
+##     mnames = colnames(mdf)
+##     r = Array(Float64,nrow(rdf),ncol(rdf))
+##     m = Array(Float64,nrow(mdf),ncol(mdf))
+##     for i = 1:nrow(rdf)
+##       for j = 1:ncol(rdf)
+##         r[i,j] = float(rdf[i,j])
+##       end
+##       for j = 1:ncol(mdf)
+##         m[i,j] = float(mdf[i,j])
+##       end
+##     end
     
-    include_intercept = true
-    if include_intercept
-      m = hcat(ones(nrow(mdf)), m)
-      unshift!(mnames, "(Intercept)")
-    end
+##     include_intercept = true
+##     if include_intercept
+##       m = hcat(ones(nrow(mdf)), m)
+##       unshift!(mnames, "(Intercept)")
+##     end
 
-    ModelMatrix(m, r, mnames, rnames)
-    ## mnames = {}
-    ## rnames = {}
-    ## for c in 1:ncol(rdf)
-    ##   r = hcat(r, float(rdf[c]))
-    ##   push!(rnames, colnames(rdf)[c])
-    ## end
-    ## for c in 1:ncol(mdf)
-    ##   m = hcat(m, mdf[c])
-    ##   push!(mnames, colnames(mdf)[c])
-    ## end
-end
+##     ModelMatrix(m, r, mnames, rnames)
+##     ## mnames = {}
+##     ## rnames = {}
+##     ## for c in 1:ncol(rdf)
+##     ##   r = hcat(r, float(rdf[c]))
+##     ##   push!(rnames, colnames(rdf)[c])
+##     ## end
+##     ## for c in 1:ncol(mdf)
+##     ##   m = hcat(m, mdf[c])
+##     ##   push!(mnames, colnames(mdf)[c])
+##     ## end
+## end
 
-model_matrix(f::Formula, d::AbstractDataFrame) = model_matrix(model_frame(f, d))
-model_matrix(ex::Expr, d::AbstractDataFrame) = model_matrix(model_frame(Formula(ex), d))
+model_matrix(f::Formula, d::AbstractDataFrame) = model_matrix(ModelFrame(f, d))
+model_matrix(ex::Expr, d::AbstractDataFrame) = model_matrix(ModelFrame(Formula(ex), d))
 
 # TODO: Make a more general version of these functions
 # TODO: Be able to extract information about each column name
