@@ -150,6 +150,7 @@ function na_omit(df::DataFrame)
     df[!msng,:], msng
 end
 
+## Trim the pool field of da to only those levels that occur in the refs
 function dropUnusedLevels!(da::PooledDataArray)
     rr = da.refs
     uu = unique(rr)
@@ -165,9 +166,9 @@ dropUnusedLevels!(x) = x
 
 function ModelFrame(f::Formula, d::AbstractDataFrame)
     trms = Terms(f)
-    etrms = map(x->with(d,x),trms.eterms)
-    df,msng = na_omit(DataFrame(map(dropUnusedLevels!, etrms)...))
+    df,msng = na_omit(DataFrame(map(x->with(d,x),trms.eterms)))
     colnames!(df, map(string, trms.eterms))
+    for c in df dropUnusedLevels!(c[2]) end
     ModelFrame(df, trms, msng)
 end
 ModelFrame(ex::Expr, d::AbstractDataFrame) = ModelFrame(Formula(ex), d)
