@@ -1,10 +1,3 @@
----
-
-layout: minimal
-title: Pooling Categorical Data
-
----
-
 # Representing Factors using the PooledDataArray Type
 
 Often, we have to deal with factors that take on a small
