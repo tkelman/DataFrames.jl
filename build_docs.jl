@@ -12,15 +12,15 @@ run(`git checkout master -- doc`)
 # between chapters in the manual.
 
 pdf_sections = ["01_introduction.md",
-				"02_getting_started.md",
-				"03_io.md",
-				"04_subsets.md",
-				"05_joins_and_indexing.md",
-				"06_split_apply_combine.md",
-				"07_reshaping_and_pivoting.md",
-				"08_datastreams.md",
-				"09_formulas.md",
-				"10_pooling.md"]
+                "02_getting_started.md",
+                "03_io.md",
+                "04_subsets.md",
+                "05_joins_and_indexing.md",
+                "06_split_apply_combine.md",
+                "07_reshaping_and_pivoting.md",
+                "08_sorting.md",
+                "09_datastreams.md",
+                "10_formulas.md"]
 
 pandoc_page_break = "\n\n\\newpage\n\n---\n\n"
 
@@ -48,37 +48,37 @@ run(`rm downloads/manual.md`)
 
 
 web_sections = ["01_introduction.md",
-				"02_getting_started.md",
-				"03_io.md",
-				"04_subsets.md",
-				"05_joins_and_indexing.md",
-				"06_split_apply_combine.md",
-				"07_reshaping_and_pivoting.md",
-				"08_datastreams.md",
-				"09_formulas.md",
-				"10_pooling.md"]
+                "02_getting_started.md",
+                "03_io.md",
+                "04_subsets.md",
+                "05_joins_and_indexing.md",
+                "06_split_apply_combine.md",
+                "07_reshaping_and_pivoting.md",
+                "08_sorting.md",
+                "09_datastreams.md",
+                "10_formulas.md"]
 
 web_titles = ["Why Use the DataFrames Package?",
 			  "Getting Started",
 			  "I/O",
 			  "Accessing Subsets of Data",
-			  "Joins and Indexing",
+			  "Joins",
 			  "Split-Apply-Combine Operations",
 			  "Reshaping and Pivoting",
+			  "Sorting",
 			  "Streaming Data Analysis",
-			  "Formulas",
-			  "PooledDataArray"]
+			  "Formulas"]
 
 web_urls = ["introduction.md",
-			"getting_started.md",
-			"io.md",
-			"subsets.md",
-			"joins_and_indexing.md",
-			"split_apply_combine.md",
-			"reshaping_and_pivoting.md",
-			"datastreams.md",
-			"formulas.md",
-			"pooling.md"]
+            "getting_started.md",
+            "io.md",
+            "subsets.md",
+            "joins_and_indexing.md",
+            "split_apply_combine.md",
+            "reshaping_and_pivoting.md",
+            "sorting.md",
+            "datastreams.md",
+            "formulas.md"]
 
 n = length(web_sections)
 if n != length(web_titles) || n != length(web_urls)

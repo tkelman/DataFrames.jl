@@ -1,7 +1,7 @@
 ---
 
 layout: minimal
-title: Joins and Indexing
+title: Joins
 
 ---
 
