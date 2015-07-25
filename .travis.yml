@@ -4,10 +4,10 @@ os:
   - linux32
   - linux64
 #  - osx
-env:
-  matrix:
-    - JULIAVERSION="https://status.julialang.org/download/linux-i686"
-    - JULIAVERSION="https://status.julialang.org/download/linux-x86_64"
+#env:
+#  matrix:
+#    - JULIAVERSION="https://status.julialang.org/download/linux-i686"
+#    - JULIAVERSION="https://status.julialang.org/download/linux-x86_64"
 #julia:
 #  - release
 #  - nightly
@@ -19,12 +19,12 @@ addons:
 notifications:
   email: false
 script:
-  - mkdir -p ~/julia
-  - curl -L $JULIAVERSION | tar -C ~/julia -x -z --strip-components=1 -f -
-  - export PATH=$PATH:$HOME/julia/bin
-  - ls -al ~/julia/bin
-  - file ~/julia/bin/*
-  - ldd ~/julia/bin/julia
+#  - mkdir -p ~/julia
+#  - curl -L $JULIAVERSION | tar -C ~/julia -x -z --strip-components=1 -f -
+#  - export PATH=$PATH:$HOME/julia/bin
+#  - ls -al ~/julia/bin
+#  - file ~/julia/bin/*
+#  - ldd ~/julia/bin/julia
   - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
   - julia --check-bounds=yes -e 'Pkg.clone(pwd()); Pkg.build("DataFrames"); Pkg.test("DataFrames"; coverage=true)'
 after_success:
