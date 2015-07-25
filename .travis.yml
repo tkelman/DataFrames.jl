@@ -1,6 +1,8 @@
 language: c
 os:
   - linux
+  - linux32
+  - linux64
 #  - osx
 env:
   matrix:
