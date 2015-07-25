@@ -1,14 +1,20 @@
-language: julia
+language: c
 os:
   - linux
-  - osx
-julia:
-  - release
-  - nightly
+#  - osx
+env:
+  matrix:
+    - JULIAVERSION="https://status.julialang.org/download/linux-i686"
+    - JULIAVERSION="https://status.julialang.org/download/linux-x86_64"
+#julia:
+#  - release
+#  - nightly
 notifications:
   email: false
 script:
   - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
+  - curl -L $JULIAVERSION | tar -C ~/julia -x -z --strip-components=1 -f -
+  - export PATH=$PATH:$HOME/julia/bin
   - julia --check-bounds=yes -e 'Pkg.clone(pwd()); Pkg.build("DataFrames"); Pkg.test("DataFrames"; coverage=true)'
 after_success:
   - julia -e 'cd(Pkg.dir("DataFrames")); Pkg.add("Coverage"); using Coverage; Coveralls.submit(Coveralls.process_folder())'
