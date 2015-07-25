@@ -9,12 +9,15 @@ env:
 #julia:
 #  - release
 #  - nightly
+sudo: false
 notifications:
   email: false
 script:
   - mkdir -p ~/julia
   - curl -L $JULIAVERSION | tar -C ~/julia -x -z --strip-components=1 -f -
   - export PATH=$PATH:$HOME/julia/bin
+  - ls -al ~/julia/bin
+  - file ~/julia/bin/*
   - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
   - julia --check-bounds=yes -e 'Pkg.clone(pwd()); Pkg.build("DataFrames"); Pkg.test("DataFrames"; coverage=true)'
 after_success:
