@@ -9,7 +9,7 @@ env:
 #julia:
 #  - release
 #  - nightly
-sudo: false
+#sudo: false
 notifications:
   email: false
 script:
