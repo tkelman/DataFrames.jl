@@ -1,4 +1,4 @@
-language: c
+language: ruby
 os:
   - linux
   - linux32
@@ -11,7 +11,7 @@ env:
 #julia:
 #  - release
 #  - nightly
-#sudo: false
+sudo: false
 addons:
   apt_packages:
 #  - gcc-multilib
