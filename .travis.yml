@@ -9,10 +9,10 @@ env:
 #julia:
 #  - release
 #  - nightly
-sudo: false
+#sudo: false
 addons:
   apt_packages:
-  - gcc-multilib
+#  - gcc-multilib
   - zlib1g:i386
 notifications:
   email: false
