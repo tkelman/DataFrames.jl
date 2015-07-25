@@ -13,6 +13,7 @@ sudo: false
 addons:
   apt_packages:
   - gcc-multilib
+  - zlib1g:i386
 notifications:
   email: false
 script:
