@@ -18,6 +18,7 @@ script:
   - export PATH=$PATH:$HOME/julia/bin
   - ls -al ~/julia/bin
   - file ~/julia/bin/*
+  - ldd ~/julia/bin/julia
   - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
   - julia --check-bounds=yes -e 'Pkg.clone(pwd()); Pkg.build("DataFrames"); Pkg.test("DataFrames"; coverage=true)'
 after_success:
